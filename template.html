@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New Grad Apply Tracker</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #667085; --line: #e3e6ea;
+    --accent: #2457d6; --accent-text: #ffffff; --good: #1a7f4b; --warn: #a15c00; --chip: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --panel: #1a1e24; --text: #e8eaed; --muted: #98a2b3; --line: #2b313a;
+      --accent: #7aa2ff; --accent-text: #0b1020; --good: #5fd39a; --warn: #f0b35a; --chip: #252b34;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 16px; }
+  h1 { margin: 0 0 2px; font-size: 18px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  input[type=search], select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  input[type=search] { min-width: 180px; flex: 1 1 180px; }
+  label.check { display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button:hover { filter: brightness(1.08); }
+  .progress { height: 6px; background: var(--chip); border-radius: 3px; margin-top: 10px; overflow: hidden; }
+  .progress > div { height: 100%; background: var(--good); width: 0; }
+  main { padding: 12px 16px 60px; max-width: 1200px; margin: 0 auto; }
+  .job { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+  .job.applied { opacity: .55; border-left: 4px solid var(--good); }
+  .job.skipped { opacity: .4; }
+  .job.opened { border-left: 4px solid var(--warn); }
+  .title { font-weight: 600; }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 10px; padding: 1px 8px; font-size: 11px; margin-right: 4px; }
+  .chip.quick { color: var(--good); }
+  .chip.sec { color: var(--accent); }
+  .chip.warn { color: var(--warn); }
+  .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+  #more { display: block; margin: 12px auto; }
+  @media (max-width: 640px) { .job { grid-template-columns: 1fr; } .actions { justify-content: flex-start; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>New Grad Apply Tracker</h1>
+  <div class="sub" id="summary"></div>
+  <div class="bar">
+    <input type="search" id="q" placeholder="Search company, title, or location">
+    <select id="focus" title="Role focus">
+      <option value="swsec">Software + Security</option>
+      <option value="sec">Security only</option>
+      <option value="sw">Software only</option>
+      <option value="data">AI / ML / Data</option>
+      <option value="all">All categories</option>
+    </select>
+    <select id="age" title="Posted within">
+      <option value="7">Last 7 days</option>
+      <option value="14" selected>Last 14 days</option>
+      <option value="30">Last 30 days</option>
+      <option value="0">Any time</option>
+    </select>
+    <select id="status" title="Status">
+      <option value="todo">To apply</option>
+      <option value="opened">Opened, not confirmed</option>
+      <option value="applied">Applied</option>
+      <option value="skipped">Skipped</option>
+      <option value="any">Everything</option>
+    </select>
+    <label class="check"><input type="checkbox" id="quick"> Quick-apply only</label>
+    <select id="auth" title="Work authorization">
+      <option value="f1">F-1 friendly: hide citizenship / no-sponsorship</option>
+      <option value="sponsors">Only postings that say they sponsor</option>
+      <option value="flagged">Only the hidden (flagged) postings</option>
+      <option value="all">Show all</option>
+    </select>
+  </div>
+  <div class="bar">
+    <button class="primary" id="openNext">Open next 5 in tabs</button>
+    <button id="export">Export applied (CSV)</button>
+    <span class="sub" id="count"></span>
+  </div>
+  <div class="progress"><div id="progressFill"></div></div>
+</header>
+<main>
+  <div id="list"></div>
+  <button id="more" hidden>Show more</button>
+</main>
+
+<script id="data" type="application/json">__JOB_DATA__</script>
+<script>
+'use strict';
+const STORAGE_KEY = 'newgrad-tracker-v1';
+const PAGE_SIZE = 150;
+const BATCH_SIZE = 5;
+const DAY_SECONDS = 86400;
+const BLOCKED_FLAGS = ['citizen', 'nosponsor'];
+const AUTH_TESTS = {
+  f1: (j) => !BLOCKED_FLAGS.includes(j.w),
+  sponsors: (j) => j.w === 'sponsors',
+  flagged: (j) => BLOCKED_FLAGS.includes(j.w),
+  all: () => true,
+};
+const AUTH_CHIPS = {
+  citizen: ['chip warn', 'citizenship / clearance'],
+  nosponsor: ['chip warn', 'no sponsorship'],
+  sponsors: ['chip quick', 'says it sponsors'],
+  unknown: ['chip', 'posting not checked'],
+};
+
+const { built, jobs } = JSON.parse(document.getElementById('data').textContent);
+const $ = (id) => document.getElementById(id);
+let statuses = loadStatuses();
+let shown = PAGE_SIZE;
+
+function loadStatuses() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    console.warn('Could not read saved progress', error);
+    return {};
+  }
+}
+
+function setStatus(id, state) {
+  const next = { ...statuses };
+  if (state) next[id] = { s: state, at: Date.now() };
+  else delete next[id];
+  statuses = next;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(statuses));
+  } catch (error) {
+    alert('Could not save progress in this browser: ' + error.message);
+  }
+  render();
+}
+
+const statusOf = (job) => (statuses[job.id] ? statuses[job.id].s : 'todo');
+
+const FOCUS_TESTS = {
+  swsec: (j) => j.cat === 'Software' || j.sec,
+  sec: (j) => j.sec,
+  sw: (j) => j.cat === 'Software',
+  data: (j) => j.cat === 'AI/ML/Data',
+  all: () => true,
+};
+
+function matches(job) {
+  const query = $('q').value.trim().toLowerCase();
+  const days = Number($('age').value);
+  const wanted = $('status').value;
+  const text = (job.c + ' ' + job.t + ' ' + job.l.join(' ')).toLowerCase();
+  if (query && !query.split(/\s+/).every((word) => text.includes(word))) return false;
+  if (!FOCUS_TESTS[$('focus').value](job)) return false;
+  if (days && Date.now() / 1000 - job.d > days * DAY_SECONDS) return false;
+  if (wanted !== 'any' && statusOf(job) !== wanted) return false;
+  if ($('quick').checked && !job.q) return false;
+  if (!AUTH_TESTS[$('auth').value](job)) return false;
+  return true;
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function ageLabel(seconds) {
+  const days = Math.floor((Date.now() / 1000 - seconds) / DAY_SECONDS);
+  return days <= 0 ? 'today' : days + 'd ago';
+}
+
+function openJob(job) {
+  window.open(job.u, '_blank', 'noopener');
+  if (statusOf(job) === 'todo') setStatus(job.id, 'opened');
+}
+
+function jobCard(job) {
+  const state = statusOf(job);
+  const card = el('div', 'job ' + state);
+  const info = el('div');
+  info.append(el('div', 'title', job.c + ' — ' + job.t));
+  const meta = el('div', 'meta');
+  meta.append(el('span', 'chip' + (job.q ? ' quick' : ''), job.q ? job.ats + ' · quick' : job.ats));
+  if (job.sec) meta.append(el('span', 'chip sec', 'security'));
+  if (AUTH_CHIPS[job.w]) meta.append(el('span', AUTH_CHIPS[job.w][0], AUTH_CHIPS[job.w][1]));
+  const places = job.l.length > 3 ? job.l.slice(0, 3).join(' | ') + ' +' + (job.l.length - 3) : job.l.join(' | ');
+  meta.append(document.createTextNode(ageLabel(job.d) + ' · ' + (places || 'Location not listed')));
+  info.append(meta);
+  if (job.ws) info.append(el('div', 'meta', 'Posting says: “…' + job.ws + '…”'));
+
+  const actions = el('div', 'actions');
+  const apply = el('button', 'primary', state === 'todo' ? 'Apply' : 'Open again');
+  apply.onclick = () => openJob(job);
+  const done = el('button', '', state === 'applied' ? 'Undo applied' : 'Mark applied');
+  done.onclick = () => setStatus(job.id, state === 'applied' ? null : 'applied');
+  const skip = el('button', '', state === 'skipped' ? 'Unskip' : 'Skip');
+  skip.onclick = () => setStatus(job.id, state === 'skipped' ? null : 'skipped');
+  actions.append(apply, done, skip);
+  card.append(info, actions);
+  return card;
+}
+
+function render() {
+  const visible = jobs.filter(matches);
+  const list = $('list');
+  list.replaceChildren(...visible.slice(0, shown).map(jobCard));
+  if (visible.length === 0) list.append(el('div', 'empty', 'Nothing matches these filters.'));
+  $('more').hidden = visible.length <= shown;
+
+  const applied = jobs.filter((j) => statusOf(j) === 'applied').length;
+  $('count').textContent = visible.length + ' shown · ' + applied + ' applied in total';
+  const pool = jobs.filter((j) => FOCUS_TESTS[$('focus').value](j)).length;
+  $('progressFill').style.width = (pool ? Math.min(100, (applied / pool) * 100) : 0) + '%';
+  return visible;
+}
+
+function openNextBatch() {
+  const batch = jobs.filter((j) => matches(j) && statusOf(j) === 'todo').slice(0, BATCH_SIZE);
+  if (batch.length === 0) return alert('No un-opened jobs left in this view.');
+  batch.forEach((job) => window.open(job.u, '_blank', 'noopener'));
+  const stamped = Object.fromEntries(batch.map((j) => [j.id, { s: 'opened', at: Date.now() }]));
+  statuses = { ...statuses, ...stamped };
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(statuses)); } catch (error) { console.warn(error); }
+  render();
+}
+
+function exportCsv() {
+  const quote = (value) => '"' + String(value).replace(/"/g, '""') + '"';
+  const rows = jobs
+    .filter((j) => statusOf(j) === 'applied')
+    .map((j) => [j.c, j.t, j.l.join(' | '), new Date(statuses[j.id].at).toISOString().slice(0, 10), j.u].map(quote).join(','));
+  if (rows.length === 0) return alert('Nothing marked as applied yet.');
+  const blob = new Blob(['Company,Title,Location,Applied on,Link\n' + rows.join('\n')], { type: 'text/csv' });
+  const link = el('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'applied-jobs.csv';
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+['q', 'focus', 'age', 'status', 'quick', 'auth'].forEach((id) =>
+  $(id).addEventListener('input', () => { shown = PAGE_SIZE; render(); }));
+$('more').onclick = () => { shown += PAGE_SIZE; render(); };
+$('openNext').onclick = openNextBatch;
+$('export').onclick = exportCsv;
+$('summary').textContent = jobs.length + ' open jobs · list refreshed ' + new Date(built).toLocaleString() +
+  ' · run refresh.cmd to update';
+render();
+</script>
+</body>
+</html>
